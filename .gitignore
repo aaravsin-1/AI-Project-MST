@@ -14,3 +14,5 @@ __pycache__/
 #all datasets
 thermal_data.csv
 simulated_generic_data.csv
+
+
