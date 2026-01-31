@@ -15,4 +15,7 @@ __pycache__/
 thermal_data.csv
 simulated_generic_data.csv
 
+#make it systenm independant
+*.pkl
+*.json
 
