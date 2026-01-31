@@ -10,3 +10,6 @@ env/
 __pycache__/
 *.py[cod]
 *.pyo
+
+#all datasets
+*.csv

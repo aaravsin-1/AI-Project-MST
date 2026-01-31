@@ -1,0 +1,32 @@
+{
+    "model_name": "Ridge Regression",
+    "test_rmse": 0.06748492167838083,
+    "test_mae": 0.04261535771549979,
+    "test_r2": 0.9999672807642354,
+    "features": [
+        "cpu_load",
+        "ram_usage",
+        "ambient_temp",
+        "cpu_load_lag1",
+        "cpu_load_lag5",
+        "cpu_load_lag10",
+        "cpu_temp_lag1",
+        "cpu_temp_lag5",
+        "temp_rate",
+        "temp_acceleration",
+        "load_rate",
+        "cpu_load_roll10",
+        "cpu_temp_roll10",
+        "cpu_load_roll30",
+        "cpu_load_std10",
+        "load_ambient_interaction",
+        "thermal_stress",
+        "temp_above_ambient",
+        "hour_of_day",
+        "hour_sin",
+        "hour_cos",
+        "is_high_load",
+        "is_heating",
+        "is_cooling"
+    ]
+}
