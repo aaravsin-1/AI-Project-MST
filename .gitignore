@@ -12,4 +12,5 @@ __pycache__/
 *.pyo
 
 #all datasets
-*.csv
+thermal_data.csv
+simulated_generic_data.csv
