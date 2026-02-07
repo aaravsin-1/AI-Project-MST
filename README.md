@@ -1,4 +1,6 @@
 # if on windows run on wsl--linux based
+- still might not work better to simply used a linux based laptop or refactor the code to use a different library
+
 
 # create a virtual environment
 1️⃣ Install Python 3.11 (if not already installed)
