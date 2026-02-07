@@ -1,0 +1,6 @@
+test fixed code for prediction
+create code for getting windows data and fix serial ports of Arduino as well
+try code on using Arduino as well
+- refactor Arduino code to use the DHT11 sensor depending what we find
+
+finsih documentation and discuss ppt
