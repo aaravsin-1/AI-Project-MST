@@ -59,12 +59,17 @@ class ThermalModelTrainer:
         Prepare feature set and target variable.
         """
         # Define feature set (excluding target and metadata)
-        exclude_cols = ['timestamp', 'unix_time', 'cpu_temp']
+        exclude_cols = ['timestamp', 'unix_time', 'cpu_temp','cpu_temp_future']
         
         feature_cols = [col for col in self.df.columns if col not in exclude_cols]
         
         X = self.df[feature_cols]
-        y = self.df['cpu_temp']
+        if 'cpu_temp_future' in self.df.columns:
+            y = self.df['cpu_temp_future']  # 5 seconds ahead
+            print("✓ Using FUTURE target")
+        else:
+            y = self.df['cpu_temp']
+            print("⚠️ Using CURRENT target")
         
         print(f"\nFeature preparation:")
         print(f"  Features: {len(feature_cols)}")
