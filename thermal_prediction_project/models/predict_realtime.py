@@ -1,15 +1,17 @@
 """
 Real-Time Thermal Prediction & Proactive Cooling - PRODUCTION VERSION
 ======================================================================
+Hardware: REES52 DS18B20 Temperature Sensor + REES52 L9110 Fan Module
+
 All critical issues fixed for production deployment.
 
 CRITICAL FIXES APPLIED:
-✓ Issue 1: Non-blocking CPU percent (prevents 0.5s blocking)
-✓ Issue 2: Arduino buffer flushing (prevents stale data)
-✓ Issue 3: Fan speed rate limiting (prevents mechanical wear)
-✓ Issue 4: Correct error reporting (renamed to predicted_delta)
-✓ Issue 5: Monotonic timing (prevents clock drift)
-✓ Issue 6: Safety fallback (Arduino-side protection)
+✓ Non-blocking CPU percent (prevents 0.5s blocking)
+✓ Arduino buffer flushing (prevents stale data from DS18B20)
+✓ Fan speed rate limiting with L9110 (prevents mechanical wear)
+✓ Correct error reporting (renamed to predicted_delta)
+✓ Monotonic timing (prevents clock drift)
+✓ Safety fallback (Arduino-side protection)
 """
 
 import psutil
@@ -26,6 +28,7 @@ warnings.filterwarnings('ignore')
 class ProactiveCoolingSystem:
     """
     Production-grade real-time thermal prediction and cooling control.
+    Updated for DS18B20 + L9110 hardware.
     """
     
     def __init__(self, model_path='models/best_thermal_model.pkl',
@@ -38,14 +41,14 @@ class ProactiveCoolingSystem:
         self.feature_history = []
         self.prediction_history = []
         
-        # 🔧 FIX 3: Fan speed rate limiting
+        # Fan speed rate limiting for L9110
         self.last_fan_speed = 0
         self.max_fan_step = 20  # Maximum change per second
         
         # Load model
         self.load_model(model_path, scaler_path)
         
-        # Try to connect Arduino
+        # Connect Arduino
         self.arduino_available = self._init_arduino(arduino_port)
         
         # Thresholds
@@ -53,9 +56,9 @@ class ProactiveCoolingSystem:
         self.TEMP_CRITICAL = 80.0
         self.PREDICTION_HORIZON = 5
         
-        # 🔧 FIX 1: Initialize psutil for non-blocking calls
+        # Initialize psutil for non-blocking calls
         print("Initializing CPU monitoring (non-blocking mode)...")
-        psutil.cpu_percent(interval=None)  # First call initializes
+        psutil.cpu_percent(interval=None)
         time.sleep(0.1)
         
     def load_model(self, model_path, scaler_path):
@@ -82,7 +85,7 @@ class ProactiveCoolingSystem:
     
     def _init_arduino(self, port):
         """
-        🔧 FIX 2: Robust Arduino initialization with buffer flushing.
+        Initialize Arduino with DS18B20 + L9110 modules.
         """
         ports_to_try = [port, '/dev/ttyUSB0', '/dev/ttyUSB1', 
                        '/dev/ttyACM0', 'COM3', 'COM4', 'COM5']
@@ -90,35 +93,42 @@ class ProactiveCoolingSystem:
         for p in ports_to_try:
             try:
                 self.arduino = serial.Serial(p, 9600, timeout=1)
-                time.sleep(2)
+                time.sleep(2.5)  # DS18B20 init time
                 
-                # 🔧 FIX 2: Flush buffers on initialization
+                # Flush buffers
                 self.arduino.reset_input_buffer()
                 self.arduino.reset_output_buffer()
                 
-                # Test communication
+                # Read startup messages
+                time.sleep(0.5)
+                while self.arduino.in_waiting:
+                    line = self.arduino.readline().decode('utf-8', errors='ignore').strip()
+                    if line and 'Arduino' in line:
+                        print(f"  {line}")
+                
+                # Test DS18B20
                 self.arduino.write(b'T\n')
-                time.sleep(0.2)
+                time.sleep(0.8)  # DS18B20 conversion time
+                
                 if self.arduino.in_waiting:
                     response = self.arduino.readline()
                     try:
-                        float(response.decode('utf-8').strip())
-                        print(f"✓ Arduino connected on {p}")
-                        return True
+                        temp = float(response.decode('utf-8').strip())
+                        if -55 <= temp <= 125:  # DS18B20 range
+                            print(f"✓ Arduino connected on {p}")
+                            print(f"✓ DS18B20 reading: {temp:.4f}°C")
+                            return True
                     except:
                         pass
             except:
                 continue
         
         print(f"⚠ Arduino not available - continuing without hardware control")
+        print("  Note: DS18B20 provides ±0.5°C accuracy")
         return False
     
     def get_system_state(self):
-        """
-        🔧 FIX 1: Non-blocking system state collection.
-        
-        CRITICAL: Uses cpu_percent(interval=None) to prevent 0.5s blocking!
-        """
+        """Non-blocking system state collection."""
         try:
             temps = psutil.sensors_temperatures()
             if 'coretemp' in temps:
@@ -131,19 +141,15 @@ class ProactiveCoolingSystem:
                 try:
                     cpu_temp = list(temps.values())[0][0].current
                 except:
-                    # 🔧 FIX 1: Non-blocking fallback
                     cpu_percent = psutil.cpu_percent(interval=None)
                     cpu_temp = 35.0 + cpu_percent * 0.4 + np.random.normal(0, 1.5)
         except:
-            # 🔧 FIX 1: Non-blocking in exception path
             cpu_percent = psutil.cpu_percent(interval=None)
             cpu_temp = 35.0 + cpu_percent * 0.4 + np.random.normal(0, 1.5)
         
-        # 🔧 FIX 1: Non-blocking CPU load - CRITICAL!
-        # Old: psutil.cpu_percent(interval=0.5) - BLOCKED for 0.5s
-        # New: psutil.cpu_percent(interval=None) - INSTANT
+        # Non-blocking CPU load - CRITICAL!
         state = {
-            'cpu_load': psutil.cpu_percent(interval=None),  # Non-blocking!
+            'cpu_load': psutil.cpu_percent(interval=None),
             'ram_usage': psutil.virtual_memory().percent,
             'ambient_temp': self._get_ambient_temp(),
             'cpu_temp': cpu_temp,
@@ -154,34 +160,33 @@ class ProactiveCoolingSystem:
     
     def _get_ambient_temp(self):
         """
-        🔧 FIX 2: Robust ambient temperature with buffer flushing.
+        Read ambient temperature from DS18B20 sensor.
         
-        CRITICAL FIX: Flushes buffer BEFORE request to prevent stale data!
+        DS18B20 requires ~750ms conversion time at 12-bit resolution.
         """
         if self.arduino_available:
             try:
-                # 🔧 FIX 2: FLUSH BUFFER BEFORE REQUEST
-                # This is critical - prevents reading old/stale temperature!
+                # Flush buffer before request
                 self.arduino.reset_input_buffer()
                 
-                # Request fresh temperature
+                # Request temperature
                 self.arduino.write(b'T\n')
                 
-                # 🔧 FIX 5: Use monotonic time for timeout
+                # Wait for DS18B20 conversion (750ms + margin)
                 start = time.monotonic()
-                while time.monotonic() - start < 0.3:
+                while time.monotonic() - start < 1.0:
                     if self.arduino.in_waiting:
                         response = self.arduino.readline()
                         try:
                             temp = float(response.decode('utf-8').strip())
-                            if 0 <= temp <= 50:  # DHT11 valid range
+                            # DS18B20 range: -55 to +125°C
+                            if -55 <= temp <= 125:
                                 return temp
                         except:
                             pass
                     time.sleep(0.01)
                 
-                # Timeout - disable Arduino
-                print("⚠ Arduino timeout - switching to simulation")
+                print("⚠ DS18B20 timeout - switching to simulation")
                 self.arduino_available = False
             except:
                 self.arduino_available = False
@@ -190,44 +195,37 @@ class ProactiveCoolingSystem:
         return 24.0 + 2.0 * np.sin(time.time() / 3600)
     
     def engineer_features(self, state):
-        """
-        Create features from current state and history.
-        Must match training feature engineering exactly.
-        """
-        # Add current state to history
+        """Create features from current state and history."""
         self.feature_history.append(state)
         
-        # Keep only last 30 seconds
         if len(self.feature_history) > 30:
             self.feature_history.pop(0)
         
-        # Need at least 11 samples for lag features
         if len(self.feature_history) < 11:
             return None
         
-        # Create feature dictionary
         features = {}
         
-        # Base features (3)
+        # Base features
         features['cpu_load'] = state['cpu_load']
         features['ram_usage'] = state['ram_usage']
         features['ambient_temp'] = state['ambient_temp']
         
-        # Lag features (5)
+        # Lag features
         features['cpu_load_lag1'] = self.feature_history[-2]['cpu_load']
         features['cpu_load_lag5'] = self.feature_history[-6]['cpu_load']
         features['cpu_load_lag10'] = self.feature_history[-11]['cpu_load']
         features['cpu_temp_lag1'] = self.feature_history[-2]['cpu_temp']
         features['cpu_temp_lag5'] = self.feature_history[-6]['cpu_temp']
         
-        # Rate features (3)
+        # Rate features
         features['temp_rate'] = state['cpu_temp'] - self.feature_history[-2]['cpu_temp']
         features['temp_acceleration'] = features['temp_rate'] - (
             self.feature_history[-2]['cpu_temp'] - self.feature_history[-3]['cpu_temp']
         )
         features['load_rate'] = state['cpu_load'] - self.feature_history[-2]['cpu_load']
         
-        # Rolling features (4)
+        # Rolling features
         recent_loads = [h['cpu_load'] for h in self.feature_history[-10:]]
         recent_temps = [h['cpu_temp'] for h in self.feature_history[-10:]]
         
@@ -236,17 +234,17 @@ class ProactiveCoolingSystem:
         features['cpu_load_roll30'] = np.mean([h['cpu_load'] for h in self.feature_history])
         features['cpu_load_std10'] = np.std(recent_loads)
         
-        # Interaction features (3)
+        # Interaction features
         features['load_ambient_interaction'] = state['cpu_load'] * state['ambient_temp']
         features['thermal_stress'] = state['cpu_load'] * state['cpu_temp']
         features['temp_above_ambient'] = state['cpu_temp'] - state['ambient_temp']
         
-        # Regime indicators (3)
+        # Regime indicators
         features['is_high_load'] = 1 if state['cpu_load'] > 70 else 0
         features['is_heating'] = 1 if features['temp_rate'] > 0.5 else 0
         features['is_cooling'] = 1 if features['temp_rate'] < -0.5 else 0
         
-        # Time features (2)
+        # Time features
         current_time = datetime.now()
         hour = current_time.hour
         features['hour_sin'] = np.sin(2 * np.pi * hour / 24)
@@ -266,7 +264,6 @@ class ProactiveCoolingSystem:
                     print(f"⚠ Missing features: {missing}")
                 feature_df = feature_df[available_features]
             
-            # Predict
             try:
                 feature_scaled = self.scaler.transform(feature_df)
                 predicted_temp = self.model.predict(feature_scaled)[0]
@@ -280,14 +277,12 @@ class ProactiveCoolingSystem:
     
     def control_fan(self, predicted_temp, current_temp):
         """
-        🔧 FIX 3: Fan control with rate limiting.
+        Fan control with L9110 H-bridge module and rate limiting.
         
-        CRITICAL IMPROVEMENT: Slew-rate limiter prevents:
-        - Audible noise from rapid speed changes
-        - Mechanical wear on fan bearings
-        - Unstable thermal response
-        
-        Makes system feel engineered, not twitchy!
+        L9110 Control:
+        - IA (Pin 5): PWM speed (0-255)
+        - IB (Pin 6): Direction (LOW for forward)
+        - Up to 800mA per channel
         """
         # Determine target fan speed
         if predicted_temp >= self.TEMP_CRITICAL:
@@ -308,10 +303,7 @@ class ProactiveCoolingSystem:
             status = "NORMAL"
             color = "\033[92m"
         
-        # 🔧 FIX 3: SLEW-RATE LIMITER
-        # Limits fan speed change to ±20 per second
-        # Prevents: 50 → 200 → 80 → 255 jumps
-        # Result: Smooth transitions, no noise, no wear
+        # Apply rate limiting (smooth L9110 control)
         fan_speed = np.clip(
             target_speed,
             self.last_fan_speed - self.max_fan_step,
@@ -319,53 +311,43 @@ class ProactiveCoolingSystem:
         )
         fan_speed = int(fan_speed)
         
-        # Update last speed for next iteration
         self.last_fan_speed = fan_speed
         
-        # Send command to Arduino
+        # Send command to L9110 via Arduino
         if self.arduino_available:
             try:
-                # 🔧 FIX 2: Flush output buffer before sending
                 self.arduino.reset_output_buffer()
                 command = f'F{fan_speed}\n'.encode()
                 self.arduino.write(command)
             except Exception as e:
-                print(f"⚠ Arduino communication error: {e}")
+                print(f"⚠ L9110 communication error: {e}")
                 self.arduino_available = False
         
         return fan_speed, status, color
     
     def run_monitoring(self, duration_minutes=10, log_file='results/prediction_log.csv'):
-        """
-        🔧 FIX 5: Main monitoring loop with monotonic timing.
-        🔧 FIX 4: Correct error reporting (predicted_delta, not error).
-        
-        CRITICAL FIXES:
-        - Uses time.monotonic() for accurate timing (immune to clock changes)
-        - Renamed temp_delta to predicted_delta (honest metric)
-        - Non-blocking CPU calls maintain 1 Hz precisely
-        """
+        """Main monitoring loop with monotonic timing."""
         print("\n" + "="*70)
         print("PROACTIVE THERMAL MANAGEMENT - PRODUCTION VERSION")
+        print("Hardware: DS18B20 + L9110")
         print("="*70)
         print(f"Duration: {duration_minutes} minutes")
         print(f"Prediction horizon: {self.PREDICTION_HORIZON} seconds")
         print(f"Warning threshold: {self.TEMP_WARNING}°C")
         print(f"Critical threshold: {self.TEMP_CRITICAL}°C")
-        print(f"Fan rate limit: ±{self.max_fan_step}/second")
+        print(f"L9110 Fan rate limit: ±{self.max_fan_step}/second")
         print("\nFIXES ACTIVE:")
-        print("  ✓ Non-blocking CPU calls (1.0s loop, not 1.5s)")
-        print("  ✓ Arduino buffer flushing (no stale data)")
-        print("  ✓ Fan speed rate limiting (smooth control)")
-        print("  ✓ Monotonic timing (immune to clock drift)")
-        print("  ✓ Honest error reporting (predicted_delta)")
+        print("  ✓ Non-blocking CPU calls (1.0s loop)")
+        print("  ✓ DS18B20 buffer flushing (no stale data)")
+        print("  ✓ L9110 rate limiting (smooth control)")
+        print("  ✓ Monotonic timing (stable)")
+        print("  ✓ Honest metrics (predicted_delta)")
         print("="*70)
         
-        # Initialize log
         os.makedirs(os.path.dirname(log_file) if os.path.dirname(log_file) else '.', exist_ok=True)
         log_data = []
         
-        # 🔧 FIX 5: Use monotonic time (not affected by system clock changes)
+        # Monotonic timing
         start_time = time.monotonic()
         end_time = start_time + (duration_minutes * 60)
         next_sample_time = start_time
@@ -377,18 +359,15 @@ class ProactiveCoolingSystem:
         
         try:
             while time.monotonic() < end_time:
-                # Get current state (non-blocking!)
                 state = self.get_system_state()
                 sample_count += 1
                 
-                # Engineer features
                 features = self.engineer_features(state)
                 
                 if features is None:
                     remaining = 11 - len(self.feature_history)
                     print(f"\rCollecting... {len(self.feature_history)}/11 samples", end='', flush=True)
                     
-                    # Sleep until next sample (monotonic timing)
                     next_sample_time += 1.0
                     sleep_time = next_sample_time - time.monotonic()
                     if sleep_time > 0:
@@ -397,23 +376,16 @@ class ProactiveCoolingSystem:
                 
                 if sample_count == 11:
                     print("\n\nStarting predictions...")
-                    print("Time      | Current | Predicted | Δ(5s) | Status   | Fan")
+                    print("Time      | Current | Predicted | Δ(5s) | Status   | L9110")
                     print("-"*70)
                 
-                # Predict future temperature
                 predicted_temp = self.predict_temperature(features)
-                
-                # 🔧 FIX 4: RENAMED to predicted_delta for honesty
-                # This is NOT prediction error!
-                # This is the predicted temperature CHANGE in next 5 seconds
                 predicted_delta = predicted_temp - state['cpu_temp']
                 
-                # Control cooling
                 fan_speed, status, color = self.control_fan(
                     predicted_temp, state['cpu_temp']
                 )
                 
-                # Display status
                 timestamp = datetime.now().strftime('%H:%M:%S')
                 print(f"{timestamp} | "
                       f"{state['cpu_temp']:6.2f}°C | "
@@ -423,19 +395,18 @@ class ProactiveCoolingSystem:
                       f"{fan_speed:3d}/255",
                       flush=True)
                 
-                # 🔧 FIX 4: Log with honest name
                 log_entry = {
                     'timestamp': timestamp,
                     'current_temp': state['cpu_temp'],
                     'predicted_temp': predicted_temp,
-                    'predicted_delta': predicted_delta,  # NOT 'temp_delta' or 'error'
+                    'predicted_delta': predicted_delta,
                     'cpu_load': state['cpu_load'],
+                    'ambient_temp_ds18b20': state['ambient_temp'],
                     'fan_speed': fan_speed,
                     'status': status
                 }
                 log_data.append(log_entry)
                 
-                # Sleep until next sample (monotonic timing)
                 next_sample_time += 1.0
                 sleep_time = next_sample_time - time.monotonic()
                 
@@ -448,13 +419,11 @@ class ProactiveCoolingSystem:
             print("\n\n⚠ Monitoring stopped by user")
         
         finally:
-            # Save log
             if log_data:
                 log_df = pd.DataFrame(log_data)
                 log_df.to_csv(log_file, index=False)
                 print(f"\n✓ Prediction log saved to: {log_file}")
                 
-                # 🔧 FIX 4: Honest statistics reporting
                 print("\n" + "="*70)
                 print("MONITORING SUMMARY")
                 print("="*70)
@@ -462,24 +431,20 @@ class ProactiveCoolingSystem:
                 print(f"Average predicted_delta: {abs(log_df['predicted_delta']).mean():.2f}°C")
                 print(f"Max predicted_delta: {abs(log_df['predicted_delta']).max():.2f}°C")
                 print(f"Temperature range: {log_df['current_temp'].min():.1f}°C - {log_df['current_temp'].max():.1f}°C")
-                print(f"Fan speed range: {log_df['fan_speed'].min()}-{log_df['fan_speed'].max()}/255")
+                print(f"DS18B20 ambient range: {log_df['ambient_temp_ds18b20'].min():.4f}°C - {log_df['ambient_temp_ds18b20'].max():.4f}°C")
+                print(f"L9110 fan speed range: {log_df['fan_speed'].min()}-{log_df['fan_speed'].max()}/255")
                 
-                # 🔧 FIX 4: Clear explanation
                 print(f"\n📊 METRIC EXPLANATION:")
                 print(f"  'predicted_delta' = predicted_temp - current_temp")
-                print(f"  This shows expected temperature CHANGE in {self.PREDICTION_HORIZON}s")
-                print(f"  This is NOT prediction error!")
-                print(f"\n📊 TO MEASURE TRUE PREDICTION ERROR:")
-                print(f"  1. Record predicted_temp at time T")
-                print(f"  2. Wait {self.PREDICTION_HORIZON} seconds")
-                print(f"  3. Measure actual_temp at time T+{self.PREDICTION_HORIZON}")
-                print(f"  4. True error = |predicted - actual|")
-                print(f"  5. Should match training RMSE (~1-1.5°C)")
+                print(f"  Shows expected temperature CHANGE in {self.PREDICTION_HORIZON}s")
+                print(f"  DS18B20 provides ±0.5°C accuracy, 0.0625°C resolution")
+                print(f"  L9110 provides smooth PWM control (0-255)")
             
-            # Cleanup
+            # Cleanup - turn off L9110 fan
             if self.arduino:
                 try:
-                    self.arduino.write(b'F0\n')  # Turn off fan
+                    self.arduino.write(b'F0\n')
+                    time.sleep(0.1)
                 except:
                     pass
                 self.arduino.close()
@@ -491,23 +456,25 @@ if __name__ == "__main__":
     print("""
     ╔══════════════════════════════════════════════════════════╗
     ║     PROACTIVE THERMAL MANAGEMENT - PRODUCTION           ║
+    ║     Hardware: DS18B20 + L9110 Fan Module                ║
     ║                                                          ║
-    ║  ALL CRITICAL ISSUES FIXED:                              ║
-    ║  ✓ Non-blocking CPU calls (1.0s loop, not 1.5s)         ║
-    ║  ✓ Arduino buffer flushing (no stale data)              ║
-    ║  ✓ Fan speed rate limiting (smooth, quiet)              ║
-    ║  ✓ Monotonic timing (stable, accurate)                  ║
-    ║  ✓ Honest metrics (predicted_delta, not error)          ║
+    ║  Temp Sensor: REES52 DS18B20                            ║
+    ║    - Accuracy: ±0.5°C                                   ║
+    ║    - Resolution: 0.0625°C (12-bit)                      ║
+    ║    - Range: -55°C to +125°C                             ║
+    ║                                                          ║
+    ║  Fan Module: REES52 L9110 H-Bridge                      ║
+    ║    - PWM control: 0-255                                 ║
+    ║    - Current: Up to 800mA                               ║
+    ║    - Smooth speed transitions                           ║
     ╚══════════════════════════════════════════════════════════╝
     """)
     
-    # Check if model exists
     if not os.path.exists('models/best_thermal_model.pkl'):
         print("❌ Error: Trained model not found")
         print("   Please run train_model.py first")
         exit(1)
     
-    # Create system
     try:
         system = ProactiveCoolingSystem()
     except Exception as e:
@@ -515,9 +482,7 @@ if __name__ == "__main__":
         exit(1)
     
     print("\n✓ System initialized successfully!")
-    print("  All production fixes active and verified.")
     
-    # Get duration
     try:
         duration = int(input("\nEnter monitoring duration in minutes (default 5): ") or "5")
     except:
@@ -525,12 +490,11 @@ if __name__ == "__main__":
     
     print(f"\nStarting {duration}-minute monitoring session...")
     print("Watch for:")
-    print("  - Precise 1 Hz timing (not 1.5s)")
-    print("  - Smooth fan transitions (±20/second max)")
-    print("  - No stale temperature readings")
+    print("  - Precise 1 Hz timing")
+    print("  - DS18B20 high-precision readings (4 decimals)")
+    print("  - L9110 smooth fan transitions")
     print("  - Clear 'predicted_delta' metric\n")
     
     system.run_monitoring(duration_minutes=duration)
     
-    print("\n✓ Monitoring complete!")
-    print("  Check prediction_log.csv for full data")
+    print("\n✅ Monitoring complete!")
