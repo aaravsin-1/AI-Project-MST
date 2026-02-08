@@ -1,6 +1,6 @@
 # 🚀 BUILD THERMAL PREDICTION SYSTEM FROM SCRATCH
 ## Complete Step-by-Step Guide with Function Explanations
-
+# OLD DONT REFER PURELY READ README
 ---
 
 # 📑 TABLE OF CONTENTS

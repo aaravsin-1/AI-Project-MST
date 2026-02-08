@@ -1,6 +1,6 @@
 # BUILD FROM SCRATCH - PART 2
 ## Continuing: Preprocessing, Training, Deployment & Function Reference
-
+# OLD DONT REFER PURELY READ README
 ---
 
 # STEP 2: DATA PREPROCESSING <a id="step-2"></a>
