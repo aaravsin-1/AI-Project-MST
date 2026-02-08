@@ -1,6 +1,7 @@
 """
 CPU Workload Generator
 =====================
+OLD - incase you want more workload but dont run since already being run by data collection script
 Generates controlled CPU load patterns for thermal data collection.
 Run this script in parallel with the data collector.
 """
