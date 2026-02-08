@@ -1,3 +1,3 @@
 Dataset,Test RMSE (°C),Test MAE (°C),Test R²,Train RMSE (°C),Train R²
-Custom Collected Data,6.1603,4.7742,0.7274,2.6719,0.9685
+Custom Collected Data,6.1522,4.7734,0.6995,2.6654,0.9688
 Kaggle Generic Data,13.0634,10.7416,0.4786,6.7138,0.8621
