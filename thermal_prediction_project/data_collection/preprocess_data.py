@@ -143,6 +143,10 @@ class ThermalDataPreprocessor:
         df['is_heating'] = (df['temp_rate'] > 0.5).astype(int)
         df['is_cooling'] = (df['temp_rate'] < -0.5).astype(int)
         
+        # CREATE FUTURE TARGET
+        df['cpu_temp_future'] = df['cpu_temp'].shift(-5)  # 5 seconds ahead
+        df = df.dropna()  # Remove last 5 rows (no future data)
+        
         # Remove initial rows with NaN from lag features
         df = df.dropna()
         
@@ -152,6 +156,8 @@ class ThermalDataPreprocessor:
         print(f"✓ Created {num_new_features} new features")
         print(f"  Total features: {len(df.columns)}")
         print(f"  Remaining samples: {len(df)}")
+        
+        
         
         return df
     
