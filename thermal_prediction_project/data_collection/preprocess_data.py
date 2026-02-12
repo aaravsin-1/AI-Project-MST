@@ -201,9 +201,13 @@ class ThermalDataPreprocessor:
             'is_high_load', 'is_heating', 'is_cooling'
         ]
         
+        # Temporal features (MUST ADD!)
+        temporal_features = [
+            'hour_sin', 'hour_cos'
+        ]
         # Combine all
         all_features = (base_features + lag_features + rate_features + 
-                       rolling_features + interaction_features + regime_features)
+                       rolling_features + interaction_features + regime_features + temporal_features)
         
         return all_features
     

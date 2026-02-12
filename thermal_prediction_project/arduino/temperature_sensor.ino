@@ -1,278 +1,285 @@
 /*
- * DS18B20 Temperature Sensor & L9110 Fan Control - PRODUCTION VERSION
- * ===================================================================
- * Arduino firmware with safety fallback mechanism.
+ * DS18B20 Temperature Sensor & L9110 Fan Control
+ * ==============================================
+ * Clean production code for thermal prediction system
+ * 
+ * Features:
+ * - DS18B20 high-precision temperature reading (±0.5°C)
+ * - L9110 PWM fan speed control (0-255)
+ * - Works in Serial Monitor (manual testing)
+ * - Works with Python script (automated control)
+ * - Simple command protocol
  * 
  * Hardware:
- * - REES52 DS18B20 Temperature Sensor Module (OneWire, Pin 2)
- * - REES52 L9110 Fan Module (Pins 5 & 6)
- * - Serial USB communication (9600 baud)
+ * - DS18B20 Temperature Sensor → Pin 2 (OneWire)
+ * - L9110 Fan Module:
+ *   → IA (Pin 9) - PWM speed control
+ *   → IB (Pin 8) - Direction control
  * 
- * DS18B20 Specifications:
- * - Temperature range: -55°C to +125°C
- * - Accuracy: ±0.5°C (-10°C to +85°C)
- * - Resolution: 9-12 bit (0.0625°C at 12-bit)
- * - Interface: OneWire (single data line)
+ * Commands:
+ * - 'T' → Returns temperature (e.g., "24.5625")
+ * - 'F<speed>' → Set fan speed 0-255 (e.g., "F128" = 50%)
+ * - 'S' → System status (debug info)
  * 
- * L9110 Fan Module Specifications:
- * - Dual H-bridge motor driver
- * - Operating voltage: 2.5V-12V
- * - Control: 2 pins (A-IA, A-IB) for direction and speed
- * - PWM for speed control
- * 
- * CRITICAL FIX: Safety fallback - if no command for 5 seconds,
- * automatically sets fan to safe speed (50%).
+ * Author: Thermal Prediction Project
+ * Version: 4.0 - Clean & Simple
  */
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
 // ============================================================================
-// PIN DEFINITIONS
+// HARDWARE CONFIGURATION
 // ============================================================================
-#define ONE_WIRE_BUS 2    // DS18B20 data pin (OneWire)
-#define FAN_IA 5          // L9110 Motor A - Input A (PWM speed control)
-#define FAN_IB 6          // L9110 Motor A - Input B (direction/brake)
+#define ONE_WIRE_BUS 2    // DS18B20 data pin
+#define FAN_IA 9          // L9110 speed control (PWM)
+#define FAN_IB 8          // L9110 direction control
 
-// ============================================================================
-// SAFETY SETTINGS
-// ============================================================================
-#define TIMEOUT_MS 5000         // 5 seconds without command
-#define SAFE_FAN_SPEED 128      // 50% speed as safe default
+// Fan direction (adjust if fan spins wrong way)
+#define FAN_REVERSE 1     // 1 = Reverse, 0 = Forward
 
 // ============================================================================
 // DS18B20 SETUP
 // ============================================================================
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
-
-// Device address (will be detected automatically)
 DeviceAddress tempSensor;
 
 // ============================================================================
-// STATE VARIABLES
+// STATE TRACKING
 // ============================================================================
-unsigned long lastCommandTime = 0;
 int currentFanSpeed = 0;
-bool safetyModeActive = false;
+bool ds18b20Ready = false;
 
+// ============================================================================
+// SETUP - RUN ONCE AT STARTUP
+// ============================================================================
 void setup() {
-    // Initialize serial communication
+    // Start serial communication (9600 baud for reliability)
     Serial.begin(9600);
     
-    // ========================================================================
-    // INITIALIZE DS18B20 TEMPERATURE SENSOR
-    // ========================================================================
-    sensors.begin();
+    // Give serial time to initialize
+    delay(100);
     
-    // Detect sensor
+    // ========================================
+    // Initialize DS18B20 Temperature Sensor
+    // ========================================
+    sensors.begin();
     int deviceCount = sensors.getDeviceCount();
-    Serial.print("DS18B20 devices found: ");
+    
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("  Thermal Control System v4.0");
+    Serial.println("  Hardware: DS18B20 + L9110");
+    Serial.println("========================================");
+    Serial.println();
+    
+    Serial.print("DS18B20 sensors detected: ");
     Serial.println(deviceCount);
     
-    if (deviceCount == 0) {
-        Serial.println("ERROR: No DS18B20 sensor detected!");
-        Serial.println("Check wiring:");
-        Serial.println("  - Red wire (VCC) → 5V");
-        Serial.println("  - Black wire (GND) → GND");
-        Serial.println("  - Yellow wire (DATA) → Pin 2");
-        Serial.println("  - 4.7kΩ resistor between VCC and DATA");
-    } else {
-        // Get address of first sensor
-        if (sensors.getAddress(tempSensor, 0)) {
-            Serial.print("Sensor address: ");
-            for (uint8_t i = 0; i < 8; i++) {
-                if (tempSensor[i] < 16) Serial.print("0");
-                Serial.print(tempSensor[i], HEX);
-            }
-            Serial.println();
-            
-            // Set resolution to 12-bit (0.0625°C precision)
-            sensors.setResolution(tempSensor, 12);
-            Serial.println("Resolution: 12-bit (0.0625°C)");
+    if (deviceCount > 0 && sensors.getAddress(tempSensor, 0)) {
+        // Set to 12-bit resolution for max precision (0.0625°C)
+        sensors.setResolution(tempSensor, 12);
+        ds18b20Ready = true;
+        
+        Serial.println("✓ DS18B20 initialized");
+        Serial.println("  Resolution: 12-bit (0.0625°C)");
+        Serial.println("  Accuracy: ±0.5°C");
+        
+        // Print sensor address (for debugging)
+        Serial.print("  Address: 0x");
+        for (uint8_t i = 0; i < 8; i++) {
+            if (tempSensor[i] < 16) Serial.print("0");
+            Serial.print(tempSensor[i], HEX);
         }
+        Serial.println();
+    } else {
+        Serial.println("✗ ERROR: DS18B20 not found!");
+        Serial.println("  Check wiring:");
+        Serial.println("    • VCC (Red) → 5V");
+        Serial.println("    • GND (Black) → GND");
+        Serial.println("    • DATA (Yellow) → Pin 2");
+        Serial.println("    • 4.7kΩ resistor: VCC ↔ DATA");
     }
     
-    // ========================================================================
-    // INITIALIZE L9110 FAN MODULE
-    // ========================================================================
+    // ========================================
+    // Initialize L9110 Fan Controller
+    // ========================================
     pinMode(FAN_IA, OUTPUT);
     pinMode(FAN_IB, OUTPUT);
     
-    // Set initial fan speed to safe default
-    setFanSpeed(SAFE_FAN_SPEED);
-    currentFanSpeed = SAFE_FAN_SPEED;
+    // Start fan at 50% for testing
+    setFanSpeed(128);
+    currentFanSpeed = 128;
     
-    // Record initialization time
-    lastCommandTime = millis();
+    Serial.println("✓ L9110 initialized");
+    Serial.println("  Initial speed: 50% (128/255)");
+    #if FAN_REVERSE
+    Serial.println("  Direction: REVERSE");
+    #else
+    Serial.println("  Direction: FORWARD");
+    #endif
     
-    // Startup message
     Serial.println();
     Serial.println("========================================");
-    Serial.println("Arduino Thermal Control v3.0 - PRODUCTION");
-    Serial.println("Hardware: DS18B20 + L9110");
-    Serial.println("Safety fallback: ENABLED");
+    Serial.println("  READY - Waiting for commands");
     Serial.println("========================================");
+    Serial.println();
+    Serial.println("Commands:");
+    Serial.println("  T       → Get temperature");
+    Serial.println("  F<num>  → Set fan speed (0-255)");
+    Serial.println("            Example: F192 = 75%");
+    Serial.println("  S       → System status");
+    Serial.println();
 }
 
+// ============================================================================
+// MAIN LOOP - RUNS CONTINUOUSLY
+// ============================================================================
 void loop() {
-    // Check for incoming serial commands
+    // Check for incoming commands
     if (Serial.available() > 0) {
         char command = Serial.read();
         
-        // Update last command time
-        lastCommandTime = millis();
-        
-        // Exit safety mode if active
-        if (safetyModeActive) {
-            safetyModeActive = false;
-            Serial.println("Safety mode: OFF");
+        // Ignore newline and carriage return
+        if (command == '\n' || command == '\r') {
+            return;
         }
         
         // Process command
-        if (command == 'T') {
-            // COMMAND: Get Temperature
-            handleTemperatureRequest();
-        }
-        else if (command == 'F') {
-            // COMMAND: Set Fan speed
-            handleFanControl();
-        }
-        else if (command == 'S') {
-            // COMMAND: Get Status
-            handleStatusRequest();
-        }
-        else {
-            // Unknown command
-            Serial.println("ERROR: Unknown command");
+        switch (command) {
+            case 'T':
+            case 't':
+                handleTemperatureRequest();
+                break;
+                
+            case 'F':
+            case 'f':
+                handleFanControl();
+                break;
+                
+            case 'S':
+            case 's':
+                handleStatusRequest();
+                break;
+                
+            default:
+                Serial.print("ERROR: Unknown command '");
+                Serial.print(command);
+                Serial.println("'");
+                Serial.println("Use: T (temp), F<num> (fan), S (status)");
+                break;
         }
     }
     
-    // ========================================================================
-    // CRITICAL SAFETY FEATURE
-    // ========================================================================
-    // Check if Python has crashed or stopped sending commands
-    unsigned long timeSinceLastCommand = millis() - lastCommandTime;
-    
-    if (timeSinceLastCommand > TIMEOUT_MS && !safetyModeActive) {
-        // SAFETY FALLBACK TRIGGERED!
-        safetyModeActive = true;
-        currentFanSpeed = SAFE_FAN_SPEED;
-        setFanSpeed(SAFE_FAN_SPEED);
-        
-        Serial.println();
-        Serial.println("⚠⚠⚠ SAFETY MODE ACTIVATED! ⚠⚠⚠");
-        Serial.print("Time since last command: ");
-        Serial.print(timeSinceLastCommand / 1000);
-        Serial.println(" seconds");
-        Serial.print("Fan set to safe speed: ");
-        Serial.print(SAFE_FAN_SPEED);
-        Serial.println("/255 (50%)");
-        Serial.println("Waiting for Python to reconnect...");
-    }
-    
-    // Small delay to prevent serial buffer overflow
+    // Small delay to prevent serial buffer issues
     delay(10);
 }
 
 // ============================================================================
-// TEMPERATURE READING (DS18B20)
+// COMMAND HANDLER: TEMPERATURE REQUEST
 // ============================================================================
 void handleTemperatureRequest() {
     /*
-     * Read DS18B20 sensor and send temperature to Python.
+     * Read DS18B20 and return temperature in Celsius.
      * 
-     * DS18B20 Features:
-     * - High precision: ±0.5°C accuracy
-     * - 12-bit resolution: 0.0625°C steps
-     * - Wide range: -55°C to +125°C
+     * Response format:
+     * - Success: "24.5625" (temperature with 4 decimals)
+     * - Failure: "ERROR"
      * 
-     * Response format: "24.5625\n" (temperature in Celsius)
+     * DS18B20 returns -127.00 on disconnection/error.
      */
     
-    // Request temperature reading
+    if (!ds18b20Ready) {
+        Serial.println("ERROR");
+        return;
+    }
+    
+    // Request temperature reading from sensor
     sensors.requestTemperatures();
     
-    // Get temperature in Celsius
-    float temperature = sensors.getTempC(tempSensor);
+    // Read temperature in Celsius
+    float temp = sensors.getTempC(tempSensor);
     
-    // Check if reading is valid
-    // DS18B20 returns -127.00 on error
-    if (temperature == DEVICE_DISCONNECTED_C || temperature < -55.0 || temperature > 125.0) {
+    // Validate reading
+    // DS18B20 valid range: -55°C to +125°C
+    if (temp == DEVICE_DISCONNECTED_C || temp < -55.0 || temp > 125.0) {
         Serial.println("ERROR");
     } else {
-        // Send temperature (DS18B20 provides high precision)
-        Serial.println(temperature, 4);  // 4 decimal places
+        // Send temperature with 4 decimal places (12-bit precision)
+        Serial.println(temp, 4);
     }
 }
 
 // ============================================================================
-// FAN CONTROL (L9110 H-Bridge Module)
+// COMMAND HANDLER: FAN SPEED CONTROL
 // ============================================================================
 void handleFanControl() {
     /*
-     * Set fan speed using L9110 dual H-bridge module.
+     * Set L9110 fan speed via PWM.
      * 
-     * L9110 Control Logic:
-     * ---------------------
-     * For forward rotation (cooling):
-     * - IA (Pin 5): PWM signal (speed control)
-     * - IB (Pin 6): LOW (direction)
+     * Command format: F<speed>
+     * - F0   → Fan OFF
+     * - F128 → 50% speed
+     * - F255 → 100% speed
      * 
-     * Speed Control:
-     * - 0   = Fan OFF
-     * - 128 = 50% speed
-     * - 255 = 100% speed (maximum)
-     * 
-     * Command format: 'F' followed by speed (0-255)
-     * Example: "F192" sets fan to 75% speed
+     * Response:
+     * - Success: "OK: Fan = 128/255"
+     * - Failure: "ERROR: Speed must be 0-255"
      */
     
-    // Read speed value from serial
+    // Read speed value from serial buffer
     int speed = Serial.parseInt();
     
     // Validate speed range
-    if (speed >= 0 && speed <= 255) {
-        // Set fan speed using L9110
-        setFanSpeed(speed);
-        currentFanSpeed = speed;
-        
-        // Confirmation
-        Serial.print("OK: Fan set to ");
-        Serial.print(speed);
-        Serial.print("/255 (");
-        Serial.print((speed * 100) / 255);
-        Serial.println("%)");
-    } else {
-        // Invalid speed
+    if (speed < 0 || speed > 255) {
         Serial.print("ERROR: Invalid speed ");
         Serial.print(speed);
         Serial.println(" (must be 0-255)");
+        return;
     }
+    
+    // Set fan speed
+    setFanSpeed(speed);
+    currentFanSpeed = speed;
+    
+    // Confirmation
+    Serial.print("OK: Fan = ");
+    Serial.print(speed);
+    Serial.print("/255 (");
+    Serial.print((speed * 100) / 255);
+    Serial.println("%)");
 }
 
 // ============================================================================
-// STATUS REQUEST
+// COMMAND HANDLER: SYSTEM STATUS
 // ============================================================================
 void handleStatusRequest() {
     /*
-     * Send current system status to Python.
-     * Useful for debugging and monitoring.
+     * Display current system state for debugging.
+     * Useful for Serial Monitor testing.
      */
+    
+    Serial.println();
     Serial.println("========================================");
-    Serial.println("SYSTEM STATUS");
+    Serial.println("         SYSTEM STATUS");
     Serial.println("========================================");
     
-    // Sensor status
+    // Temperature sensor status
     Serial.print("DS18B20 Sensor: ");
-    sensors.requestTemperatures();
-    float temp = sensors.getTempC(tempSensor);
-    if (temp == DEVICE_DISCONNECTED_C) {
-        Serial.println("DISCONNECTED");
+    if (!ds18b20Ready) {
+        Serial.println("NOT DETECTED");
     } else {
-        Serial.print("OK (");
-        Serial.print(temp, 2);
-        Serial.println("°C)");
+        sensors.requestTemperatures();
+        float temp = sensors.getTempC(tempSensor);
+        
+        if (temp == DEVICE_DISCONNECTED_C) {
+            Serial.println("ERROR (disconnected)");
+        } else {
+            Serial.print("OK → ");
+            Serial.print(temp, 2);
+            Serial.println(" °C");
+        }
     }
     
     // Fan status
@@ -282,53 +289,70 @@ void handleStatusRequest() {
     Serial.print((currentFanSpeed * 100) / 255);
     Serial.println("%)");
     
-    // Safety mode
-    Serial.print("Safety Mode: ");
-    Serial.println(safetyModeActive ? "ACTIVE" : "INACTIVE");
+    // Direction
+    Serial.print("Fan Direction: ");
+    #if FAN_REVERSE
+    Serial.println("REVERSE");
+    #else
+    Serial.println("FORWARD");
+    #endif
     
     // Uptime
     Serial.print("Uptime: ");
-    Serial.print(millis() / 1000);
-    Serial.println(" seconds");
+    unsigned long seconds = millis() / 1000;
+    unsigned long minutes = seconds / 60;
+    unsigned long hours = minutes / 60;
     
-    // Last command
-    Serial.print("Time since last command: ");
-    Serial.print((millis() - lastCommandTime) / 1000);
-    Serial.println(" seconds");
+    if (hours > 0) {
+        Serial.print(hours);
+        Serial.print("h ");
+    }
+    Serial.print(minutes % 60);
+    Serial.print("m ");
+    Serial.print(seconds % 60);
+    Serial.println("s");
+    
+    // Free memory (useful for debugging)
+    Serial.print("Free RAM: ");
+    Serial.print(freeMemory());
+    Serial.println(" bytes");
     
     Serial.println("========================================");
+    Serial.println();
 }
 
 // ============================================================================
-// L9110 FAN SPEED CONTROL FUNCTION
+// L9110 FAN SPEED CONTROL
 // ============================================================================
 void setFanSpeed(int speed) {
-    /*
-     * Control L9110 motor driver for fan speed.
-     * 
-     * L9110 H-Bridge Truth Table:
-     * ---------------------------
-     * IA  | IB  | Motor State
-     * ----|-----|-------------
-     * LOW | LOW | Motor OFF (brake)
-     * PWM | LOW | Forward (cooling) - OUR MODE
-     * LOW | PWM | Reverse (not used)
-     * PWM | PWM | Motor OFF
-     * 
-     * For fan cooling, we use:
-     * - IA (Pin 5) = PWM (0-255) for speed
-     * - IB (Pin 6) = LOW for forward direction
-     */
-    
     if (speed == 0) {
-        // Fan OFF - both pins LOW (brake mode)
         analogWrite(FAN_IA, 0);
         digitalWrite(FAN_IB, LOW);
-    } else {
-        // Fan ON - PWM on IA, LOW on IB (forward mode)
-        analogWrite(FAN_IA, speed);
-        digitalWrite(FAN_IB, LOW);
+        return;
     }
+
+#if FAN_REVERSE
+    digitalWrite(FAN_IB, HIGH);   // reverse direction
+#else
+    digitalWrite(FAN_IB, LOW);    // forward direction
+#endif
+
+    analogWrite(FAN_IA, speed);   // PWM ONLY on pin 9
+}
+// ============================================================================
+// UTILITY: FREE MEMORY CHECK
+// ============================================================================
+int freeMemory() {
+    /*
+     * Returns approximate free RAM in bytes.
+     * Useful for debugging memory leaks.
+     * 
+     * Arduino Uno has 2KB RAM total.
+     * Typical usage: 200-400 bytes for this program.
+     */
+    extern int __heap_start, *__brkval;
+    int v;
+    return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
 }
 
 /*
@@ -336,103 +360,166 @@ void setFanSpeed(int speed) {
  * HARDWARE WIRING GUIDE
  * ============================================================================
  * 
- * DS18B20 TEMPERATURE SENSOR MODULE:
- * -----------------------------------
- * DS18B20 Pin  →  Arduino Pin
- * VCC (Red)    →  5V
- * GND (Black)  →  GND
- * DATA (Yellow)→  Pin 2
+ * DS18B20 TEMPERATURE SENSOR:
+ * ---------------------------
+ * Pin        → Arduino
+ * --------   ---------
+ * VCC (Red)    → 5V
+ * GND (Black)  → GND
+ * DATA (Yellow)→ Pin 2
  * 
- * IMPORTANT: Add 4.7kΩ pull-up resistor between VCC and DATA
- * (Some modules have built-in resistor - check yours!)
+ * CRITICAL: Add 4.7kΩ pull-up resistor between VCC and DATA!
+ * (Some modules have it built-in - check with multimeter)
+ * 
  * 
  * L9110 FAN MODULE:
  * -----------------
- * L9110 Pin    →  Arduino Pin
- * VCC          →  5V (or external 5-12V for more power)
- * GND          →  GND
- * A-IA         →  Pin 5 (PWM - speed control)
- * A-IB         →  Pin 6 (direction control)
- * MOTOR A+     →  Fan positive (+)
- * MOTOR A-     →  Fan negative (-)
+ * Pin      → Arduino
+ * ----     ---------
+ * VCC      → 5V (or external 5-12V for powerful fans)
+ * GND      → GND (common ground with Arduino!)
+ * A-IA     → Pin 9 (PWM speed control)
+ * A-IB     → Pin 8 (direction control)
  * 
- * NOTES:
- * - For higher power fans (>500mA), use external power supply
- * - Connect external GND to Arduino GND (common ground)
- * - L9110 can drive up to 800mA per channel
+ * Motor Connections:
+ * MOTOR A+ → Fan positive wire (usually red)
+ * MOTOR A- → Fan negative wire (usually black)
  * 
- * POWER OPTIONS:
- * --------------
- * Option 1: Low power fan (<500mA)
- *   - Power L9110 VCC from Arduino 5V
- *   - Simple, no external supply needed
+ * POWER NOTES:
+ * - Small fans (<500mA): Arduino 5V is sufficient
+ * - Large fans (>500mA): Use external 5-12V power supply
+ *   → Connect external GND to Arduino GND (CRITICAL!)
+ *   → Arduino provides control signals only
  * 
- * Option 2: High power fan (>500mA)
- *   - Power L9110 VCC from external 5-12V supply
- *   - Connect external GND to Arduino GND
- *   - Arduino only provides control signals
+ * FAN DIRECTION:
+ * - If fan spins wrong direction, change FAN_REVERSE from 1 to 0
+ * - Or swap the motor wires (A+ ↔ A-)
  * 
  * ============================================================================
- * SAFETY MECHANISM EXPLANATION
+ * TESTING PROCEDURE
  * ============================================================================
  * 
- * Problem: If Python script crashes, fan stays at last speed.
- *          Could be 0% when CPU is under heavy load → overheating!
+ * 1. SERIAL MONITOR TESTING:
+ * --------------------------
+ * Open Arduino Serial Monitor (9600 baud, Both NL & CR)
  * 
- * Solution: Arduino monitors time since last command.
- *           If > 5 seconds, automatically sets fan to 50% (safe default).
+ * Test temperature:
+ *   Type: T
+ *   Expected: "24.5625" (current room temperature)
  * 
- * Example Scenario:
- * -----------------
- * t=0s:   Python running, sending commands every 1s
- * t=10s:  Python crashes (exception, user kill, etc.)
- * t=15s:  Arduino notices: no command for 5s
- * t=15s:  Arduino activates safety mode: fan → 50%
- * Result: CPU stays cool even though Python crashed!
+ * Test fan speed:
+ *   Type: F0     → Fan should stop
+ *   Type: F128   → Fan at 50%
+ *   Type: F255   → Fan at 100%
  * 
- * Why 50% (128/255)?
- * -------------------
- * - Not too low: Provides active cooling
- * - Not too high: Doesn't drain power
- * - Safe middle ground for most situations
- * - Adjustable based on your requirements
+ * Check status:
+ *   Type: S
+ *   Expected: Full system status display
  * 
- * Recovery:
- * ---------
- * When Python restarts and sends command, Arduino automatically
- * exits safety mode and resumes normal operation.
+ * 
+ * 2. PYTHON INTEGRATION TESTING:
+ * ------------------------------
+ * Use this Python snippet:
+ * 
+ *   import serial
+ *   import time
+ *   
+ *   arduino = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)
+ *   time.sleep(2)  # Wait for Arduino to initialize
+ *   
+ *   # Test temperature
+ *   arduino.write(b'T\n')
+ *   temp = arduino.readline().decode().strip()
+ *   print(f"Temperature: {temp}°C")
+ *   
+ *   # Test fan
+ *   arduino.write(b'F192\n')  # 75% speed
+ *   response = arduino.readline().decode().strip()
+ *   print(response)
+ * 
+ * 
+ * 3. CONTINUOUS MONITORING:
+ * -------------------------
+ * Test repeated commands (like Python script does):
+ * 
+ *   while True:
+ *       arduino.write(b'T\n')
+ *       temp = arduino.readline()
+ *       arduino.write(b'F128\n')
+ *       time.sleep(1)
+ * 
  * 
  * ============================================================================
  * TROUBLESHOOTING
  * ============================================================================
  * 
- * DS18B20 Returns ERROR:
- * ----------------------
- * 1. Check wiring (especially DATA to Pin 2)
- * 2. Verify 4.7kΩ pull-up resistor is present
- * 3. Try different DS18B20 module (could be faulty)
- * 4. Check serial monitor for "devices found: 0"
+ * PROBLEM: DS18B20 returns "ERROR"
+ * SOLUTION:
+ *   1. Check wiring (especially DATA → Pin 2)
+ *   2. Verify 4.7kΩ pull-up resistor present
+ *   3. Check power supply (5V steady)
+ *   4. Try different DS18B20 module (could be faulty)
+ *   5. Measure resistance: DATA-to-VCC should be ~4.7kΩ
  * 
- * Fan Doesn't Spin:
- * -----------------
- * 1. Check L9110 power supply (needs 5-12V)
- * 2. Verify fan is connected to MOTOR A terminals
- * 3. Try sending 'F255' for full speed test
- * 4. Check if fan needs minimum voltage to start
- * 5. Verify Pin 5 and Pin 6 connections
+ * PROBLEM: Fan doesn't spin
+ * SOLUTION:
+ *   1. Check L9110 power (VCC should be 5-12V)
+ *   2. Verify motor connections (A+ and A-)
+ *   3. Try full speed: F255
+ *   4. Check if fan needs minimum voltage (some need 30%+ to start)
+ *   5. Swap FAN_REVERSE setting (try 0 and 1)
+ *   6. Test with multimeter: Pin 9 should show ~5V at F255
  * 
- * Safety Mode Activates Immediately:
- * ----------------------------------
- * 1. Python not sending commands
- * 2. Check serial port connection
- * 3. Verify baud rate is 9600
- * 4. Python script may have crashed
+ * PROBLEM: Serial commands not working
+ * SOLUTION:
+ *   1. Verify baud rate: 9600 in both Arduino and Serial Monitor
+ *   2. Check line ending: "Both NL & CR" in Serial Monitor
+ *   3. Try lowercase commands (t, f, s)
+ *   4. Re-upload Arduino code
+ *   5. Check USB cable (data, not just charging)
  * 
- * Temperature Reads -127°C:
- * -------------------------
- * 1. DS18B20 disconnected or faulty
- * 2. Check OneWire bus wiring
- * 3. Power supply issue
+ * PROBLEM: Fan spins wrong direction
+ * SOLUTION:
+ *   1. Change #define FAN_REVERSE from 1 to 0 (or vice versa)
+ *   2. Or swap motor wires: A+ ↔ A-
+ *   3. Re-upload code
+ * 
+ * PROBLEM: Erratic temperature readings
+ * SOLUTION:
+ *   1. Add/check 4.7kΩ pull-up resistor
+ *   2. Use shorter wire (< 3 meters)
+ *   3. Add 0.1µF capacitor near DS18B20 (noise filtering)
+ *   4. Keep wire away from power lines (EMI interference)
+ * 
+ * PROBLEM: Arduino resets when fan starts
+ * SOLUTION:
+ *   1. Power issue! Fan draws too much current
+ *   2. Use external power supply for L9110
+ *   3. Add 100µF capacitor across Arduino 5V-GND
+ *   4. Use separate power supply for Arduino and fan
+ * 
+ * ============================================================================
+ * PERFORMANCE SPECS
+ * ============================================================================
+ * 
+ * DS18B20 Temperature Sensor:
+ * - Accuracy: ±0.5°C (-10°C to +85°C)
+ * - Resolution: 0.0625°C (12-bit)
+ * - Range: -55°C to +125°C
+ * - Conversion time: 750ms (12-bit)
+ * - Interface: OneWire (single data line)
+ * 
+ * L9110 Motor Driver:
+ * - Operating voltage: 2.5V - 12V
+ * - Output current: 800mA per channel (continuous)
+ * - Peak current: 1.5A per channel
+ * - PWM frequency: Compatible with Arduino (490Hz / 980Hz)
+ * - Logic voltage: 5V (Arduino compatible)
+ * 
+ * Arduino Timing:
+ * - Loop frequency: ~100 Hz (10ms delay)
+ * - Command response: < 5ms (instant)
+ * - Temperature read: ~750ms (DS18B20 conversion)
  * 
  * ============================================================================
  */
