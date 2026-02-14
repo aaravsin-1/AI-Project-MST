@@ -15,6 +15,7 @@ CRITICAL FIXES APPLIED:
 """
 
 import psutil
+import random
 import time
 import csv
 import os
@@ -366,18 +367,37 @@ Next Steps:
     
     @staticmethod
     def _burn_cpu(duration, intensity):
-        """Generate CPU load."""
-        end_time = time.monotonic() + duration
+        """
+        Generate CPU load with accurate duty cycling.
+    
+        Args:
+            duration: How long to maintain this load (seconds)
+            intensity: Target CPU utilization (0.0 to 1.0)
         
+            Method: Work-Sleep Cycle
+        - Work for (intensity) seconds doing computation
+        - Sleep for (1 - intensity) seconds
+        - Repeat until duration elapsed
+    
+        Example:
+            intensity=0.25 → Work 0.25s, Sleep 0.75s → 25% CPU
+            intensity=0.75 → Work 0.75s, Sleep 0.25s → 75% CPU
+        """
+        end_time = time.monotonic() + duration
+    
+        # Computation size (from working old generator)
+        work_size = 10000
+    
         while time.monotonic() < end_time:
-            busy_end = time.monotonic() + intensity
-            while time.monotonic() < busy_end:
-                _ = sum(i**2 for i in range(1000))
-            
+            # BUSY PERIOD: Compute for (intensity) seconds
+            busy_start = time.monotonic()
+            while time.monotonic() - busy_start < intensity:
+                _ = sum(i**2 for i in range(work_size))
+        
+            # IDLE PERIOD: Rest for (1 - intensity) seconds
             idle_time = 1.0 - intensity
             if idle_time > 0:
                 time.sleep(idle_time)
-
 
 if __name__ == "__main__":
     print("""
