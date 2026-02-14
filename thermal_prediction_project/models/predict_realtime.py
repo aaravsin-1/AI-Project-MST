@@ -12,6 +12,7 @@ CRITICAL FIXES APPLIED:
 ✓ Correct error reporting (renamed to predicted_delta)
 ✓ Monotonic timing (prevents clock drift)
 ✓ Safety fallback (Arduino-side protection)
+✓ FIXED: hour_of_day bug - only creates hour_sin/hour_cos features
 """
 
 import psutil
@@ -244,7 +245,7 @@ class ProactiveCoolingSystem:
         features['is_heating'] = 1 if features['temp_rate'] > 0.5 else 0
         features['is_cooling'] = 1 if features['temp_rate'] < -0.5 else 0
         
-        # Time features
+        # Time features (FIXED - only hour_sin and hour_cos, NOT hour_of_day!)
         current_time = datetime.now()
         hour = current_time.hour
         features['hour_sin'] = np.sin(2 * np.pi * hour / 24)
@@ -258,32 +259,39 @@ class ProactiveCoolingSystem:
             feature_df = pd.DataFrame([features])
             
             if self.feature_names is not None:
+                # Only use features that the model was trained with
                 available_features = [f for f in self.feature_names if f in feature_df.columns]
                 if len(available_features) < len(self.feature_names):
                     missing = set(self.feature_names) - set(available_features)
                     print(f"⚠ Missing features: {missing}")
+                    return None
                 feature_df = feature_df[available_features]
             
             try:
+                # Extra Trees doesn't need scaling
+                predicted_temp = self.model.predict(feature_df)[0]
+            except:
+                # Try with scaling if unscaled fails
                 feature_scaled = self.scaler.transform(feature_df)
                 predicted_temp = self.model.predict(feature_scaled)[0]
-            except:
-                predicted_temp = self.model.predict(feature_df)[0]
             
             return predicted_temp
         except Exception as e:
             print(f"❌ Prediction error: {e}")
-            raise
+            return None
     
     def control_fan(self, predicted_temp, current_temp):
         """
         Fan control with L9110 H-bridge module and rate limiting.
         
         L9110 Control:
-        - IA (Pin 5): PWM speed (0-255)
-        - IB (Pin 6): Direction (LOW for forward)
+        - IA (Pin 9): PWM speed (0-255)
+        - IB (Pin 8): Direction (LOW for forward)
         - Up to 800mA per channel
         """
+        if predicted_temp is None:
+            predicted_temp = current_temp  # Fallback
+        
         # Determine target fan speed
         if predicted_temp >= self.TEMP_CRITICAL:
             target_speed = 255
@@ -342,6 +350,7 @@ class ProactiveCoolingSystem:
         print("  ✓ L9110 rate limiting (smooth control)")
         print("  ✓ Monotonic timing (stable)")
         print("  ✓ Honest metrics (predicted_delta)")
+        print("  ✓ Fixed temporal features (hour_sin/hour_cos only)")
         print("="*70)
         
         os.makedirs(os.path.dirname(log_file) if os.path.dirname(log_file) else '.', exist_ok=True)
@@ -380,6 +389,15 @@ class ProactiveCoolingSystem:
                     print("-"*70)
                 
                 predicted_temp = self.predict_temperature(features)
+                
+                if predicted_temp is None:
+                    print("\n⚠ Prediction failed, skipping this sample")
+                    next_sample_time += 1.0
+                    sleep_time = next_sample_time - time.monotonic()
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                    continue
+                
                 predicted_delta = predicted_temp - state['cpu_temp']
                 
                 fan_speed, status, color = self.control_fan(

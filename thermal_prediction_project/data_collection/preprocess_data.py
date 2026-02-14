@@ -3,6 +3,8 @@ Data Preprocessing and Feature Engineering
 ==========================================
 Prepares thermal data for machine learning model training.
 Includes physics-based feature engineering for thermal inertia.
+
+FIXED: hour_of_day is NOT saved to CSV (only hour_sin/hour_cos)
 """
 
 import pandas as pd
@@ -131,10 +133,15 @@ class ThermalDataPreprocessor:
         # === CYCLICAL TIME FEATURES ===
         # Time of day can affect ambient conditions
         
-        if 'unix_time' in df.columns:
-            df['hour_of_day'] = pd.to_datetime(df['timestamp']).dt.hour
-            df['hour_sin'] = np.sin(2 * np.pi * df['hour_of_day'] / 24)
-            df['hour_cos'] = np.cos(2 * np.pi * df['hour_of_day'] / 24)
+        if 'unix_time' in df.columns or 'timestamp' in df.columns:
+            if 'timestamp' in df.columns:
+                hour_of_day = pd.to_datetime(df['timestamp']).dt.hour
+            else:
+                hour_of_day = pd.to_datetime(df['unix_time'], unit='s').dt.hour
+            
+            # Create sin/cos encoding (DON'T save hour_of_day!)
+            df['hour_sin'] = np.sin(2 * np.pi * hour_of_day / 24)
+            df['hour_cos'] = np.cos(2 * np.pi * hour_of_day / 24)
         
         # === REGIME INDICATORS ===
         # Binary features for operating regimes
@@ -145,9 +152,8 @@ class ThermalDataPreprocessor:
         
         # CREATE FUTURE TARGET
         df['cpu_temp_future'] = df['cpu_temp'].shift(-5)  # 5 seconds ahead
-        df = df.dropna()  # Remove last 5 rows (no future data)
         
-        # Remove initial rows with NaN from lag features
+        # Remove rows with NaN from lag features and future target
         df = df.dropna()
         
         self.df_processed = df
@@ -156,8 +162,6 @@ class ThermalDataPreprocessor:
         print(f"✓ Created {num_new_features} new features")
         print(f"  Total features: {len(df.columns)}")
         print(f"  Remaining samples: {len(df)}")
-        
-        
         
         return df
     
@@ -201,35 +205,53 @@ class ThermalDataPreprocessor:
             'is_high_load', 'is_heating', 'is_cooling'
         ]
         
-        # Temporal features (MUST ADD!)
+        # Temporal features (ONLY sin/cos, NOT hour_of_day!)
         temporal_features = [
             'hour_sin', 'hour_cos'
         ]
+        
         # Combine all
         all_features = (base_features + lag_features + rate_features + 
-                       rolling_features + interaction_features + regime_features + temporal_features)
+                       rolling_features + interaction_features + 
+                       regime_features + temporal_features)
         
         return all_features
     
-    def prepare_training_data(self, target='cpu_temp'):
+    def prepare_training_data(self, target='cpu_temp_future'):
         """
         Prepare features and target for model training.
         
         Args:
-            target: Target variable name (default: cpu_temp)
+            target: Target variable name (default: cpu_temp_future)
             
         Returns:
             X, y: Features and target arrays
         """
         features = self.get_feature_set()
         
+        # Verify all features exist
+        available_features = [f for f in features if f in self.df_processed.columns]
+        missing_features = set(features) - set(available_features)
+        
+        if missing_features:
+            print(f"⚠ Warning: Missing features: {missing_features}")
+            features = available_features
+        
         X = self.df_processed[features]
-        y = self.df_processed[target]
+        
+        # Use future target if available, otherwise current temp
+        if target in self.df_processed.columns:
+            y = self.df_processed[target]
+            print(f"✓ Using FUTURE target ({target})")
+        else:
+            y = self.df_processed['cpu_temp']
+            print(f"⚠ Using CURRENT target (cpu_temp)")
         
         print(f"\nPreparing training data:")
         print(f"  Features: {len(features)}")
+        print(f"  Feature list: {features}")
         print(f"  Samples: {len(X)}")
-        print(f"  Target: {target}")
+        print(f"  Target: {target if target in self.df_processed.columns else 'cpu_temp'}")
         
         return X, y
     
@@ -384,6 +406,14 @@ class ThermalDataPreprocessor:
         self.df_processed.to_csv(output_path, index=False)
         print(f"\n✓ Saved processed data to: {output_path}")
         print(f"  File size: {os.path.getsize(output_path) / 1024:.2f} KB")
+        
+        # Verify saved columns
+        saved_df = pd.read_csv(output_path)
+        print(f"  Columns in saved file: {len(saved_df.columns)}")
+        if 'hour_of_day' in saved_df.columns:
+            print(f"  ⚠ WARNING: hour_of_day was saved (should not be!)")
+        else:
+            print(f"  ✓ hour_of_day correctly excluded")
 
 
 if __name__ == "__main__":
@@ -391,17 +421,22 @@ if __name__ == "__main__":
     ╔══════════════════════════════════════════════════════════╗
     ║      DATA PREPROCESSING & FEATURE ENGINEERING           ║
     ║   Physics-Based Thermal Model Preparation                ║
+    ║   FIXED: hour_of_day NOT saved (only hour_sin/cos)       ║
     ╚══════════════════════════════════════════════════════════╝
     """)
     
     # Path to collected data
-    DATA_PATH = 'collected_data/thermal_data.csv'
+    import glob
     
-    # Check if data exists
-    if not os.path.exists(DATA_PATH):
-        print(f"❌ Error: Data file not found at {DATA_PATH}")
-        print("   Please run collect_thermal_data.py first to collect data.")
+    # Find most recent data file
+    data_files = glob.glob('collected_data/thermal_data*.csv')
+    if not data_files:
+        print("❌ Error: No data files found in collected_data/")
+        print("   Please run collect_thermal_data.py first.")
         exit(1)
+    
+    DATA_PATH = sorted(data_files)[-1]  # Most recent file
+    print(f"Using most recent data file: {DATA_PATH}\n")
     
     # Initialize preprocessor
     preprocessor = ThermalDataPreprocessor(DATA_PATH)
@@ -421,4 +456,6 @@ if __name__ == "__main__":
     preprocessor.save_processed_data()
     
     print("\n✓ Preprocessing complete!")
-    print("Next step: python3 train_model.py")
+    print("\n🔥 IMPORTANT: You must RETRAIN the model now!")
+    print("   Run: python models/train_model.py")
+    print("\n   The model needs to be retrained without hour_of_day feature.")
