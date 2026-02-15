@@ -240,7 +240,7 @@ void handleFanControl() {
     }
     
     // Set fan speed
-    setFanSpeed(speed);
+    setFanSpeed(speed);//might comment out -- incase
     currentFanSpeed = speed;
     
     // Confirmation
